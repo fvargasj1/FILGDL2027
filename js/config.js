@@ -1,7 +1,7 @@
 // Configuración central de la plataforma. Para pasar a Supabase:
 // cambia modo a "supabase" y pega la URL y la clave pública (anon) del proyecto.
 export const config = {
-  modo: 'demo', // 'demo' | 'supabase'
+  modo: 'supabase', // 'demo' | 'supabase'
   supabaseUrl: 'https://xwkvaxgoldbwibeietiu.supabase.co/rest/v1/',
   supabaseAnonKey: 'sb_publishable_6QaTysz8sFSjckQJIwxITQ_HBNQxElo',
   sesionId: 'lab-2026',
