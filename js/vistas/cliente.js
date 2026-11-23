@@ -1,17 +1,26 @@
-import { h, pintar, borrador, vistaCarta, datosCarta, logoSage, sinTildes, nombreEquipo } from './ui.js';
+import { h, pintar, borrador, vistaCarta, datosCarta, logoSage, nombreEquipo, reloj } from './ui.js';
 import { PREGUNTAS, CONTACTO_TEXTO } from '../contenido/encuesta.js';
-import { MAX_PALABRA, MAX_COMENTARIO, MAX_MOTIVO, MAX_CARTAS_EQUIPO, RESPUESTAS_RETO } from '../logica/estado.js';
+import { MAX_PALABRA, MAX_COMENTARIO, MAX_MOTIVO, MAX_CARTAS_EQUIPO, RESPUESTAS_RETO, buscarPersonas, equiposActivos } from '../logica/estado.js';
 import { normalizarCodigo, esReto, esCarta } from '../contenido/cartas.js';
 import { config } from '../config.js';
+import { CATALOGO, ESTADO_RECURSO, DIMENSIONES, NIVELES, CANALES, ESPERA, PARTICIPO, FORMATOS, PUBLICOS, MAX_DESEO, MAX_ABIERTA, TEXTOS, PANTALLAS } from '../contenido/experiencia.js';
+import { faltanRecursos } from '../logica/experiencia.js';
 
 const primerNombre = (a) => a?.nombre.split(' ')[0] ?? '';
 
 // pendiente: código que llegó por QR o NFC antes de montar la vista ({ codigo, bruto } o null).
 export function montarCliente(raiz, store, yo, pendiente = null) {
-  const ui = { busqueda: '', confirmar: null, error: {}, aviso: {}, encuesta: null, editarPalabra: false, hoja: null, escribir: false, pasa: undefined };
+  const ui = { busqueda: '', registro: false, confirmar: null, error: {}, aviso: {}, encuesta: null, editarPalabra: false, hoja: null, escribir: false, pasa: undefined };
   let estado = store.getEstado();
 
-  const render = () => pintar(raiz, vista());
+  // Mientras alguien arrastra una barra no se repinta (perdería el arrastre); se repinta al soltar.
+  let ocupado = false, repintar = false;
+  const render = () => { if (ocupado) { repintar = true; return; } pintar(raiz, vista()); };
+  const soltar = () => { if (!ocupado) return; ocupado = false; if (repintar) { repintar = false; render(); } };
+  globalThis.addEventListener?.('pointerup', soltar);
+  globalThis.addEventListener?.('pointercancel', soltar);
+  globalThis.addEventListener?.('touchend', soltar);
+  globalThis.addEventListener?.('change', soltar);
   const set = (cambios) => { Object.assign(ui, cambios); render(); };
   async function hacer(zona, nombre, args, alTerminar) {
     ui.error[zona] = null; ui.aviso[zona] = null;
@@ -97,8 +106,9 @@ export function montarCliente(raiz, store, yo, pendiente = null) {
 
   // ---------- pantallas ----------
   function encabezado(a) {
-    return h('header', null, logoSage(),
-      h('div', { class: 'ev' }, config.nombreEvento, a ? h('small', null, a.equipo ? `${a.nombre}, equipo ${nombreEquipo(a.equipo)}` : a.nombre) : null));
+    return [h('header', null, logoSage(),
+      h('div', { class: 'ev' }, config.nombreEvento, a ? h('small', null, a.equipo ? `${a.nombre}, equipo ${nombreEquipo(a.equipo)}` : a.nombre) : null)),
+      a ? reloj(estado.temporizador, 'reloj-cel', 'Tiempo para esta parte') : null];
   }
 
   function pantallaIngreso() {
@@ -109,22 +119,53 @@ export function montarCliente(raiz, store, yo, pendiente = null) {
         h('div', { class: 'persona', style: { cursor: 'default' } }, h('b', null, a.nombre), h('span', null, a.institucion)),
         a.ingreso ? h('p', { class: 'sutil' }, 'Esta persona ya ingresó en otro celular. Si eres tú, puedes continuar aquí.') : null,
         h('button', { class: 'btn ancho', onclick: () => { yo.set(a.id, a.reinicios); set({ confirmar: null }); hacer('ingreso', 'ingresar', { asistente: a.id }); } }, 'Sí, soy yo'),
-        h('button', { class: 'btn sec ancho', onclick: () => set({ confirmar: null }) }, 'No, volver a la lista'));
+        h('button', { class: 'btn sec ancho', onclick: () => set({ confirmar: null }) }, 'No, volver a buscar'));
     }
-    const q = sinTildes(ui.busqueda.trim());
-    const lista = Object.values(estado.asistentes)
-      .filter(a => !q || sinTildes(a.nombre + ' ' + a.institucion).includes(q))
-      .sort((x, y) => x.nombre.localeCompare(y.nombre, 'es'));
+    if (ui.registro) return pantallaRegistro();
+    const q = ui.busqueda.trim();
+    const corto = q.replace(/\s/g, '').length < 3;
+    const lista = corto ? [] : buscarPersonas(estado, q);
     return h('div', { class: 'bloque' },
       h('h1', null, 'Bienvenida, bienvenido'),
       pendiente ? h('p', { class: 'ok' }, 'Leímos tu carta. Primero dinos quién eres y enseguida la abrimos.') : null,
-      h('p', null, 'Busca tu nombre y tócalo para entrar.'),
-      h('input', { class: 'campo', 'data-k': 'buscar', type: 'search', placeholder: 'Tu nombre o institución', value: ui.busqueda, autocomplete: 'off',
+      h('label', { for: 'buscar', style: { fontSize: '17px' } }, 'Escribe tu nombre y elígelo para entrar.'),
+      h('input', { id: 'buscar', class: 'campo', 'data-k': 'buscar', type: 'text', placeholder: 'Tu nombre', value: ui.busqueda,
+        autocomplete: 'off', autocapitalize: 'words', spellcheck: 'false', 'aria-describedby': 'buscar-ayuda',
         oninput: (e) => { ui.busqueda = e.target.value; render(); } }),
-      h('div', { class: 'lista-personas' },
-        lista.length ? lista.map(a => h('button', { class: 'persona', onclick: () => set({ confirmar: a.id }) }, h('b', null, a.nombre), h('span', null, a.institucion)))
-          : h('p', { class: 'sutil' }, 'No encontramos ese nombre. Pide ayuda a alguien del equipo de Sage.')),
+      corto ? h('p', { id: 'buscar-ayuda', class: 'sutil' }, 'Escribe al menos tres letras.')
+        : lista.length
+          ? h('div', { id: 'buscar-ayuda', class: 'lista-personas', role: 'list' },
+              lista.map(a => h('button', { class: 'persona', role: 'listitem', onclick: () => set({ confirmar: a.id }) }, h('b', null, a.nombre), h('span', null, a.institucion))))
+          : h('p', { id: 'buscar-ayuda', class: 'sutil' }, 'No encontramos ese nombre en la lista.'),
+      corto ? null : h('div', { class: 'registrate' },
+        h('span', null, lista.length ? '¿No apareces?' : '¿Es tu primera vez en la lista?'),
+        h('button', { class: lista.length ? 'btn link' : 'btn ancho', onclick: () => set({ registro: true, error: { ...ui.error, registro: null } }) }, 'Registrarme')),
       err('ingreso'));
+  }
+
+  function pantallaRegistro() {
+    const campo = (k, etiqueta, attrs = {}) => h('div', { class: 'campo-reg' },
+      h('label', { for: 'r-' + k }, etiqueta),
+      h('input', { id: 'r-' + k, class: 'campo', 'data-k': 'r-' + k, oninput: borrador, ...attrs }));
+    const enviar = () => {
+      const id = 'n-' + (globalThis.crypto?.randomUUID?.().slice(0, 12) ?? Math.random().toString(36).slice(2, 12));
+      const datos = { id, nombre: valor('r-nombre'), institucion: valor('r-institucion'), pais: valor('r-pais'), correo: valor('r-correo') };
+      hacer('registro', 'registrar', datos, () => {
+        yo.set(id, 0);
+        ['nombre', 'institucion', 'pais', 'correo'].forEach(k => limpiar('r-' + k));
+        ui.registro = false; ui.busqueda = '';
+      });
+    };
+    return h('form', { class: 'bloque', novalidate: true, onsubmit: (e) => { e.preventDefault(); enviar(); } },
+      h('h1', null, 'Regístrate'),
+      h('p', { class: 'sutil' }, 'Te toma un minuto. Usaremos estos datos solo para el LAB y para escribirte si nos lo pides.'),
+      campo('nombre', 'Nombre y apellido', { value: ui.busqueda.trim(), autocomplete: 'name', autocapitalize: 'words', required: true, maxlength: 80 }),
+      campo('institucion', 'Institución', { autocomplete: 'organization', required: true, maxlength: 120 }),
+      campo('pais', 'País', { autocomplete: 'country-name', required: true, maxlength: 60 }),
+      campo('correo', 'Correo', { type: 'email', inputmode: 'email', autocomplete: 'email', autocapitalize: 'off', required: true, maxlength: 120 }),
+      err('registro'),
+      h('button', { class: 'btn ancho', type: 'submit' }, 'Registrarme y entrar'),
+      h('button', { class: 'btn link', type: 'button', onclick: () => set({ registro: false }) }, 'Volver a buscar mi nombre'));
   }
 
   function bloquePalabra(a) {
@@ -217,10 +258,26 @@ export function montarCliente(raiz, store, yo, pendiente = null) {
       err('motivo'), ok('motivo'));
   }
 
+  function bloqueVoto(a) {
+    if (estado.votacion === 'resultado') return h('div', { class: 'bloque voto' }, h('h2', null, 'La votación cerró'), h('p', null, 'Mira el resultado en la pantalla del frente.'));
+    const mio = estado.votos?.[a.id];
+    const otros = equiposActivos(estado).filter(c => c !== a.equipo);
+    return h('div', { class: 'bloque voto' },
+      h('h2', null, '¿Qué equipo defendió mejor su carta clave?'),
+      h('p', { class: 'sutil' }, mio ? `Votaste por ${nombreEquipo(mio)}. Puedes cambiar tu voto mientras la votación siga abierta.` : 'Toca un equipo para votar. No puedes votar por el tuyo.'),
+      h('div', { class: 'opciones-voto', role: 'group', 'aria-label': 'Equipos' }, otros.map(c => {
+        const clave = estado.jugadas.find(j => j.equipo === c && j.clave);
+        return h('button', { 'aria-pressed': String(mio === c), onclick: () => hacer('voto', 'votar', { asistente: a.id, equipo: c }) },
+          h('b', null, nombreEquipo(c)), h('span', null, clave ? datosCarta(clave.carta).titulo : 'Sin carta clave'));
+      })),
+      err('voto'));
+  }
+
   function pantallaRonda2(a) {
-    if (!a.equipo) return sinEquipo(a);
+    if (!a.equipo) return estado.fase === 'cuentanos' && estado.votacion !== 'cerrada' ? bloqueVoto(a) : sinEquipo(a);
     return h('div', { class: 'bloque', style: { gap: '22px' } },
       h('h1', null, 'Cartas sobre la mesa'),
+      estado.fase === 'cuentanos' && estado.votacion !== 'cerrada' ? bloqueVoto(a) : null,
       comoEscanear('una carta de tu mano'),
       h('p', { class: 'sutil' }, `Pongan sobre su reto las cartas que mejor lo resuelven, hasta ${MAX_CARTAS_EQUIPO} por equipo, y elijan una carta clave.`),
       bloqueEscribir(a),
@@ -240,10 +297,18 @@ export function montarCliente(raiz, store, yo, pendiente = null) {
     const r = ui.encuesta;
     return h('div', { class: 'bloque', style: { gap: '22px' } },
       h('h1', null, 'Antes de despedirnos'),
-      h('p', { class: 'sutil' }, 'Cinco preguntas cortas. Todas son opcionales.'),
+      h('p', { class: 'sutil' }, 'Seis preguntas cortas. Todas son opcionales.'),
       PREGUNTAS.map(p => h('div', { class: 'bloque' },
         h('label', { for: 'q-' + p.id, style: { fontWeight: 700, fontSize: '17px', color: 'var(--navy)' } }, p.texto),
-        p.tipo === 'escala'
+        p.id === 'p1' && estado.palabras[a.id] ? h('p', { class: 'antes' }, 'Al llegar elegiste ', h('b', null, estado.palabras[a.id]), '.') : null,
+        p.ayuda ? h('p', { class: 'sutil' }, p.ayuda) : null,
+        p.tipo === 'multiple'
+          ? h('div', { class: 'chips', role: 'group', 'aria-label': p.texto }, p.opciones.map(o => {
+              const sel = (r[p.id] ?? []).includes(o.id);
+              return h('button', { 'aria-pressed': String(sel), onclick: () => { const v = new Set(r[p.id] ?? []); sel ? v.delete(o.id) : v.add(o.id); r[p.id] = [...v]; render(); } },
+                h('span', { class: 'marca', 'aria-hidden': 'true' }, sel ? '✓' : '+'), o.nombre);
+            }))
+        : p.tipo === 'escala'
           ? [h('div', { class: 'escala', role: 'group', 'aria-label': p.texto },
               [1, 2, 3, 4, 5].map(n => h('button', { 'aria-pressed': String(r[p.id] === n), onclick: () => { r[p.id] = r[p.id] === n ? undefined : n; render(); } }, n))),
              h('div', { class: 'escala-leyenda' }, h('span', null, 'Poco'), h('span', null, 'Mucho'))]
@@ -252,6 +317,152 @@ export function montarCliente(raiz, store, yo, pendiente = null) {
       h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: !!r.contacto, onchange: (e) => { r.contacto = e.target.checked; } }), CONTACTO_TEXTO),
       h('button', { class: 'btn ancho', onclick: () => hacer('encuesta', 'guardarEncuesta', { asistente: a.id, respuestas: { ...r } }, () => { ui.editandoEncuesta = false; }) }, 'Enviar respuestas'),
       err('encuesta'));
+  }
+
+  // ---------- Tu experiencia con Sage (después de la apertura) ----------
+  const logoRecurso = (r) => r.logo
+    ? h('img', { class: 'logo-rec', src: `assets/recursos/${r.logo}.svg`, alt: r.nombre })
+    : h('span', { class: 'logo-rec txt' }, r.nombre);
+
+  // Barra deslizante. Sin respuesta se ve en gris; la primera vez que se toca queda respondida.
+  // clave: para conservar el foco; poner(n): dónde se guarda el valor.
+  function barra(k, valor, poner, min, max, { izq, der, palabra = (n) => String(n), grande = false, etiqueta }) {
+    let sin = valor == null;
+    const v = sin ? Math.round((min + max) / 2) : valor;
+    const pct = (n) => `${((n - min) / (max - min)) * 100}%`;
+    const salida = h('output', { class: 'valor' + (grande ? ' grande' : '') + (sin ? ' sin' : ''), 'aria-hidden': 'true' }, sin ? 'Sin responder' : palabra(v));
+    const fijar = (el) => {
+      const n = Number(el.value);
+      poner(n); sin = false;
+      el.classList.remove('sin-valor');
+      el.style.setProperty('--p', pct(n));
+      el.setAttribute('aria-valuetext', palabra(n));
+      salida.textContent = palabra(n); salida.classList.remove('sin');
+    };
+    const input = h('input', { type: 'range', class: 'deslizar' + (sin ? ' sin-valor' : ''), 'data-k': 'b-' + k, min, max, step: 1, value: v,
+      'aria-label': etiqueta, 'aria-valuetext': sin ? 'Sin responder' : palabra(v), style: { '--p': sin ? '0%' : pct(v) },
+      onpointerdown: () => { ocupado = true; }, oninput: (e) => fijar(e.target), onclick: (e) => { if (sin) fijar(e.target); } });
+    const marcas = h('div', { class: 'marcas', 'aria-hidden': 'true' }, Array.from({ length: max - min + 1 }, (_, i) => h('span', null, min + i)));
+    return h('div', { class: 'resp-barra' }, grande ? salida : null, input, marcas,
+      h('div', { class: 'escala-leyenda' }, h('span', null, izq), grande ? null : salida, h('span', null, der)));
+  }
+
+  function chips(campo, opciones, etiqueta) {
+    const r = ui.exp.r;
+    return h('div', { class: 'chips', role: 'group', 'aria-label': etiqueta }, Object.entries(opciones).map(([id, nombre]) => {
+      const sel = (r[campo] ?? []).includes(id);
+      return h('button', { 'aria-pressed': String(sel), onclick: () => { const v = new Set(r[campo] ?? []); sel ? v.delete(id) : v.add(id); r[campo] = [...v]; render(); } },
+        h('span', { class: 'marca', 'aria-hidden': 'true' }, sel ? '✓' : '+'), nombre);
+    }));
+  }
+  const abierta = (campo, etiqueta, { corta = false, placeholder = '' } = {}) => h('div', { class: 'bloque' },
+    h('label', { for: 'x-' + campo, class: 'preg' }, etiqueta),
+    h(corta ? 'input' : 'textarea', { id: 'x-' + campo, class: 'campo', 'data-k': 'x-' + campo, maxlength: MAX_ABIERTA, value: ui.exp.r[campo] ?? '', placeholder,
+      style: corta ? null : { minHeight: '84px' }, oninput: (e) => { ui.exp.r[campo] = e.target.value; } }));
+  const pregunta = (texto, ayuda, ...cuerpo) => h('div', { class: 'bloque preg-bloque' }, h('p', { class: 'preg' }, texto), ayuda ? h('p', { class: 'sutil' }, ayuda) : null, cuerpo);
+
+  const pasos = [
+    // 1. Tu biblioteca y Sage hoy
+    () => {
+      const r = ui.exp.r; r.recursos ??= {};
+      const faltan = faltanRecursos(r);
+      return [
+        h('p', { class: 'sutil' }, 'Son cuatro pantallas cortas, unos cuatro minutos. En la pantalla del salón las respuestas se muestran sin nombre.'),
+        pregunta(TEXTOS.recursos, null,
+          h('dl', { class: 'leyenda-rec' },
+            h('dt', null, 'Lo tenemos'), h('dd', null, 'tu institución ya lo tiene.'),
+            h('dt', null, 'Lo conozco'), h('dd', null, 'lo conoces, pero no lo tienen.'),
+            h('dt', null, 'Nuevo para mí'), h('dd', null, 'no lo conocías.')),
+          h('div', { class: 'recursos-lista' }, CATALOGO.map(c => h('div', { class: 'rec' + (r.recursos[c.id] ? ' marcado' : '') },
+            h('div', { class: 'rec-cab' }, logoRecurso(c)),
+            h('p', { class: 'rec-desc' }, c.desc),
+            h('div', { class: 'seg', role: 'group', 'aria-label': c.nombre }, Object.entries(ESTADO_RECURSO).map(([k, t]) =>
+              h('button', { 'aria-pressed': String(r.recursos[c.id] === k), onclick: () => { r.recursos[c.id] = k; render(); } }, t)))))),
+          h('p', { class: 'avance-rec' + (faltan ? '' : ' listo') }, faltan ? `Te ${faltan === 1 ? 'falta' : 'faltan'} ${faltan} de ${CATALOGO.length}.` : 'Listo, marcaste todos.')),
+        pregunta(TEXTOS.nps, null, barra('nps', r.nps, (n) => { r.nps = n; }, 0, 10, { izq: 'Nada probable', der: 'Muy probable', grande: true, etiqueta: TEXTOS.nps })),
+      ];
+    },
+    // 2. Qué funciona y qué no
+    () => {
+      const r = ui.exp.r; r.dims ??= {};
+      return [
+        pregunta(TEXTOS.dims, 'Desliza cada barra. Si no tienes cómo opinar sobre alguno, déjalo sin responder.',
+          DIMENSIONES.map(d => h('div', { class: 'dim' },
+            h('div', { class: 'dim-cab' }, h('b', null, d.nombre), h('span', null, d.ayuda)),
+            barra('dim-' + d.id, r.dims[d.id], (n) => { r.dims[d.id] = n; }, 1, 5, { izq: '', der: '', palabra: (n) => NIVELES[n - 1], etiqueta: d.nombre })))),
+        abierta('valora', TEXTOS.valora, { placeholder: 'Lo que no cambiarías…' }),
+        abierta('mejora', TEXTOS.mejora, { placeholder: 'Si pudieras cambiar una sola cosa…' }),
+      ];
+    },
+    // 3. Comunicación y formación
+    () => {
+      const r = ui.exp.r;
+      const util = ['Nada útil', 'Poco útil', 'Algo útil', 'Útil', 'Muy útil'];
+      return [
+        h('h2', { class: 'sub-exp' }, 'Comunicación'),
+        pregunta(TEXTOS.canales, 'Elige todos los que apliquen.', chips('canales', CANALES, TEXTOS.canales)),
+        pregunta(TEXTOS.utilMkt, null, barra('utilMkt', r.utilMkt, (n) => { r.utilMkt = n; }, 1, 5, { izq: 'Nada útil', der: 'Muy útil', palabra: (n) => util[n - 1], etiqueta: TEXTOS.utilMkt })),
+        pregunta(TEXTOS.espera, 'Elige todos los que quieras.', chips('espera', ESPERA, TEXTOS.espera)),
+        abierta('esperaOtra', TEXTOS.esperaOtra, { corta: true, placeholder: 'Me gustaría recibir…' }),
+        h('h2', { class: 'sub-exp' }, 'Formación y entrenamiento'),
+        pregunta(TEXTOS.participo, null, h('div', { class: 'opciones', role: 'group', 'aria-label': TEXTOS.participo },
+          Object.entries(PARTICIPO).map(([k, t]) => h('button', { 'aria-pressed': String(r.participo === k), onclick: () => { r.participo = r.participo === k ? undefined : k; if (r.participo === 'no') delete r.utilForm; render(); } }, t)))),
+        r.participo && r.participo !== 'no'
+          ? pregunta(TEXTOS.utilForm, null, barra('utilForm', r.utilForm, (n) => { r.utilForm = n; }, 1, 5, { izq: 'Nada útil', der: 'Muy útil', palabra: (n) => util[n - 1], etiqueta: TEXTOS.utilForm })) : null,
+        pregunta(TEXTOS.formatos, 'Elige todos los que quieras.', chips('formatos', FORMATOS, TEXTOS.formatos)),
+        pregunta(TEXTOS.publicos, 'Elige todos los que apliquen.', chips('publicos', PUBLICOS, TEXTOS.publicos)),
+      ];
+    },
+    // 4. Sin límite de presupuesto
+    () => {
+      const r = ui.exp.r; r.deseo ??= [];
+      const lleno = r.deseo.length >= MAX_DESEO;
+      return [
+        pregunta(TEXTOS.deseo, `Elige hasta ${MAX_DESEO}, en orden de prioridad. Toca de nuevo para quitar.`,
+          h('div', { class: 'deseo' }, CATALOGO.map(c => {
+            const pos = r.deseo.indexOf(c.id);
+            const tiene = r.recursos?.[c.id] === 'tiene';
+            return h('button', { class: 'deseo-item', 'aria-pressed': String(pos >= 0), disabled: pos < 0 && lleno,
+              'aria-label': `${c.nombre}${pos >= 0 ? `, prioridad ${pos + 1}` : ''}${tiene ? ', ya lo tienen' : ''}`,
+              onclick: () => { r.deseo = pos >= 0 ? r.deseo.filter(x => x !== c.id) : [...r.deseo, c.id]; render(); } },
+              pos >= 0 ? h('span', { class: 'num', 'aria-hidden': 'true' }, pos + 1) : null,
+              logoRecurso(c),
+              tiene ? h('span', { class: 'ya' }, 'Ya lo tienen') : null);
+          })),
+          r.deseo.length
+            ? h('ol', { class: 'orden-deseo' }, r.deseo.map(id => h('li', null, CATALOGO.find(c => c.id === id).nombre)))
+            : h('p', { class: 'avance-rec' }, 'Todavía no eliges ninguno.')),
+        abierta('frase', TEXTOS.frase, { placeholder: 'Completa la frase…' }),
+      ];
+    },
+  ];
+  function pantallaExperiencia(a) {
+    const guardada = estado.experiencia?.[a.id];
+    if (!ui.exp) ui.exp = { paso: 0, r: structuredClone(guardada ?? {}), revisar: false };
+    if (guardada?.terminado && !ui.exp.revisar) {
+      return h('div', { class: 'bloque' },
+        h('h1', null, `Gracias, ${primerNombre(a)}`),
+        h('p', null, 'Tus respuestas ya están guardadas. En un momento seguimos con el juego; mientras tanto, mira la pantalla del frente.'),
+        h('button', { class: 'btn link', onclick: () => set({ exp: { paso: 0, r: structuredClone(guardada), revisar: true } }) }, 'Revisar mis respuestas'));
+    }
+    const { paso, r } = ui.exp;
+    const ultimo = paso === pasos.length - 1;
+    const ir = (n) => { ui.exp.paso = n; render(); globalThis.scrollTo?.(0, 0); };
+    const respuestas = () => { const x = structuredClone(r); delete x.terminado; return x; };
+    const siguiente = () => hacer('exp', 'guardarExperiencia', { asistente: a.id, respuestas: respuestas(), terminar: ultimo },
+      () => { if (ultimo) { ui.exp.revisar = false; globalThis.scrollTo?.(0, 0); } else ir(paso + 1); });
+    const bloqueado = paso === 0 && faltanRecursos(r) > 0;
+    return h('div', { class: 'bloque exp', style: { gap: '22px' } },
+      h('div', { class: 'exp-cab' },
+        h('span', { class: 'paso' }, `Paso ${paso + 1} de ${pasos.length}`),
+        h('div', { class: 'progreso', 'aria-hidden': 'true' }, pasos.map((_, i) => h('i', { class: i <= paso ? 'hecho' : null }))),
+        h('h1', null, PANTALLAS[paso])),
+      pasos[paso](),
+      err('exp'),
+      h('div', { class: 'exp-pie' },
+        paso > 0 ? h('button', { class: 'btn sec', onclick: () => ir(paso - 1) }, 'Atrás') : h('span'),
+        h('button', { class: 'btn', disabled: bloqueado, onclick: siguiente }, ultimo ? 'Enviar mis respuestas' : 'Siguiente')),
+      bloqueado ? h('p', { class: 'sutil', style: { textAlign: 'right' } }, 'Marca todos los recursos para seguir.') : null);
   }
 
   function pantallaGracias(a) {
@@ -274,6 +485,7 @@ export function montarCliente(raiz, store, yo, pendiente = null) {
     const cuerpo = {
       llegada: () => bloquePalabra(a),
       apertura: () => espera('Ya casi empezamos', 'Mira la pantalla del frente.'),
+      experiencia: () => pantallaExperiencia(a),
       ronda1: () => pantallaRonda1(a),
       ronda2: () => pantallaRonda2(a),
       cuentanos: () => pantallaRonda2(a),
@@ -287,5 +499,5 @@ export function montarCliente(raiz, store, yo, pendiente = null) {
   // Para la barra demo: simular que este celular escaneó un código.
   const escanear = (codigo) => { const a = miPersona(); if (a) procesar(a, { codigo: normalizarCodigo(codigo), bruto: codigo }); else { pendiente = { codigo: normalizarCodigo(codigo), bruto: codigo }; render(); } };
   globalThis.__labEscanear = escanear;
-  return () => { quitar(); if (globalThis.__labEscanear === escanear) delete globalThis.__labEscanear; };
+  return () => { quitar(); globalThis.removeEventListener?.('pointerup', soltar); globalThis.removeEventListener?.('pointercancel', soltar); globalThis.removeEventListener?.('touchend', soltar); globalThis.removeEventListener?.('change', soltar); if (globalThis.__labEscanear === escanear) delete globalThis.__labEscanear; };
 }

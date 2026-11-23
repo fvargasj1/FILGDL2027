@@ -1,6 +1,6 @@
 // Carga una librería externa desde la CDN y, si falla, desde la copia local en vendor/.
 const LIBRERIAS = {
-  xlsx: ['https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js', 'vendor/xlsx.full.min.js', 'XLSX'],
+  exceljs: ['https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js', 'vendor/exceljs.min.js', 'ExcelJS'],
   qrcode: ['https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.js', 'vendor/qrcode.js', 'qrcode'],
   supabase: ['https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.119.2/dist/umd/supabase.js', 'vendor/supabase.js', 'supabase'],
 };

@@ -57,3 +57,32 @@ export function pintar(raiz, nodo) {
 export const borrador = (e) => { e.target.dataset.borrador = '1'; };
 
 export const sinTildes = (s) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+
+// ---------- temporizador ----------
+// Cada elemento con data-reloj se actualiza solo, sin volver a pintar la vista.
+export const formatoReloj = (s) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+function restante(el) {
+  if (el.dataset.fin) return Math.max(0, Math.ceil((Date.parse(el.dataset.fin) - Date.now()) / 1000));
+  return Number(el.dataset.restante);
+}
+function tic() {
+  for (const el of document.querySelectorAll('[data-reloj]')) {
+    const s = restante(el);
+    const t = el.querySelector('.t') ?? el;
+    const txt = s > 0 ? formatoReloj(s) : 'Tiempo';
+    if (t.textContent !== txt) t.textContent = txt;
+    el.classList.toggle('poco', s > 0 && s <= 30);
+    el.classList.toggle('cero', s === 0);
+    el.classList.toggle('pausa', !el.dataset.fin);
+  }
+}
+if (globalThis.document && !globalThis.__labReloj) globalThis.__labReloj = setInterval(tic, 250);
+
+// t: estado.temporizador. Devuelve null si no hay temporizador.
+export function reloj(t, clase = 'reloj', etiqueta = null) {
+  if (!t) return null;
+  const el = h('div', { class: clase, 'data-reloj': '', 'data-fin': t.fin || null, 'data-restante': t.fin ? null : t.restante, role: 'timer', 'aria-live': 'off' },
+    etiqueta ? h('span', { class: 'e' }, etiqueta) : null, h('span', { class: 't' }, ''));
+  queueMicrotask(tic);
+  return el;
+}

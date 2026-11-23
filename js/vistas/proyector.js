@@ -1,7 +1,9 @@
-import { h, pintar, datosCarta, vistaCarta, logoFil, nombreEquipo } from './ui.js';
-import { equiposActivos, MAX_CARTAS_EQUIPO } from '../logica/estado.js';
-import { PREGUNTAS } from '../contenido/encuesta.js';
+import { h, pintar, datosCarta, vistaCarta, logoFil, nombreEquipo, reloj } from './ui.js';
+import { equiposActivos, MAX_CARTAS_EQUIPO, resumenVoto } from '../logica/estado.js';
+import { PREGUNTAS, conteoRecursos } from '../contenido/encuesta.js';
 import { config } from '../config.js';
+import { CATALOGO, NIVELES } from '../contenido/experiencia.js';
+import { avanceExperiencia, resumenRecursos, rankingDeseo, resumenNps, promediosDims, fraseDeClave } from '../logica/experiencia.js';
 import { cargarLibreria } from '../cargar-libreria.js';
 
 const cargarQr = () => cargarLibreria('qrcode');
@@ -17,7 +19,7 @@ function qrSvg(texto) {
 }
 
 // Tamaño de palabra según repeticiones; máximo 80 distintas visibles.
-function nube(palabras, vacio) {
+function nube(palabras, vacio, escala = 1) {
   const cuenta = new Map();
   for (const p of palabras) { const k = p.trim().toLowerCase(); if (!k) continue; const v = cuenta.get(k) || { texto: p.trim(), n: 0 }; v.n++; cuenta.set(k, v); }
   const items = [...cuenta.values()].sort((a, b) => b.n - a.n).slice(0, 80);
@@ -25,7 +27,7 @@ function nube(palabras, vacio) {
   const max = items[0].n;
   const colores = ['#ffffff', '#f5ae8d', '#a8d9de', '#ccb4d7'];
   const total = items.length;
-  const base = total > 40 ? 34 : total > 20 ? 46 : 60;
+  const base = (total > 40 ? 34 : total > 20 ? 46 : 60) * escala;
   // orden intercalado para que la más grande quede al centro
   const orden = []; items.forEach((it, i) => (i % 2 ? orden.push(it) : orden.unshift(it)));
   return h('div', { class: 'nube' }, orden.map((it, i) => h('span', {
@@ -70,6 +72,8 @@ export function montarProyector(raiz, store) {
       h('div', { class: 'sub', style: { fontSize: 'calc(var(--u)*40)' } }, 'Library Advisory Board, 3ra edición en Latinoamérica'),
       h('div', { class: 'ev' }, config.nombreEvento)),
 
+    experiencia: () => (vistasExperiencia[estado.vistaExperiencia] ?? vistasExperiencia.avance)(),
+
     ronda1: () => {
       const es = equipos();
       return [h('div', null, h('h2', null, 'Los retos de nuestras bibliotecas'),
@@ -91,6 +95,8 @@ export function montarProyector(raiz, store) {
     },
 
     cuentanos: () => {
+      if (estado.votacion === 'abierta') return votoAbierto();
+      if (estado.votacion === 'resultado') return votoResultado();
       const c = estado.destacado && estado.equipos[estado.destacado] ? estado.destacado : null;
       if (!c) return fases.ronda2();
       const eq = estado.equipos[c];
@@ -111,19 +117,158 @@ export function montarProyector(raiz, store) {
         h('div', { class: 'cifras', style: { marginTop: 'auto' } },
           h('div', { class: 'cifra' }, h('b', null, rs.length), h('span', null, rs.length === 1 ? 'persona ya respondió' : 'personas ya respondieron')),
           h('div', { class: 'cifra' }, h('b', null, prom('p4')), h('span', null, PREGUNTAS[3].texto + ' (de 1 a 5)')),
-          h('div', { class: 'cifra' }, h('b', null, prom('p5')), h('span', null, PREGUNTAS[4].texto + ' (de 1 a 5)')))];
+          h('div', { class: 'cifra' }, h('b', null, prom('p5')), h('span', null, PREGUNTAS[4].texto + ' (de 1 a 5)'))),
+        recursos()];
     },
 
-    gracias: () => h('div', { class: 'llegada', style: { gridTemplateColumns: 'calc(var(--u)*640) 1fr' } },
-      h('div', { style: { display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 'calc(var(--u)*24)' } },
-        h('h1', { style: { fontSize: 'calc(var(--u)*120)' } }, 'Gracias'),
-        h('div', { class: 'sub' }, 'Por poner sus cartas sobre la mesa. Así nos describieron hoy.')),
-      nube([...Object.values(estado.palabras), ...Object.values(estado.encuesta).map(r => r.p1).filter(Boolean)], '')),
+    gracias: () => {
+      const salir = Object.values(estado.encuesta).map(r => r.p1).filter(Boolean);
+      return h('div', { class: 'gracias' },
+        h('div', { class: 'gr-tit' },
+          h('h1', null, 'Gracias'),
+          h('div', { class: 'sub' }, 'Por poner sus cartas sobre la mesa.')),
+        salir.length
+          ? h('div', { class: 'antes-despues' },
+              h('div', { class: 'col' }, h('span', { class: 'rotulo' }, 'Al llegar'), nube(Object.values(estado.palabras), '', 0.55)),
+              h('div', { class: 'col' }, h('span', { class: 'rotulo' }, 'Al salir'), nube(salir, '', 0.55)))
+          : nube(Object.values(estado.palabras), ''));
+    },
   };
+
+  // ---------- Tu experiencia con Sage ----------
+  const logoBlanco = (c, cls = 'logo-b') => c.logo
+    ? h('img', { class: cls, src: `assets/recursos/blanco/${c.logo}.svg`, alt: c.nombre })
+    : h('span', { class: cls + ' txt' }, c.nombre);
+  const logoAzul = (c, cls = 'logo-a') => c.logo
+    ? h('img', { class: cls, src: `assets/recursos/${c.logo}.svg`, alt: c.nombre })
+    : h('span', { class: cls + ' txt' }, c.nombre);
+  const coma = (n, d = 1) => (n == null ? '-' : n.toFixed(d).replace('.', ','));
+
+  const vistasExperiencia = {
+    avance: () => {
+      const a = avanceExperiencia(estado);
+      return h('div', { class: 'exp-avance' },
+        h('div', { class: 'col' },
+          h('h1', null, 'Tu experiencia con Sage'),
+          h('div', { class: 'sub' }, 'Responde en tu celular: son cuatro pantallas cortas. Aquí todo se muestra sin nombre.'),
+          h('div', { class: 'cuenta' }, h('b', null, a.terminaron), h('span', null, `de ${a.dentro || Object.keys(estado.asistentes).length} ya terminaron`)),
+          h('div', { class: 'puntos' }, Array.from({ length: a.dentro }, (_, i) => h('i', { class: i < a.terminaron ? 'si' : null })))),
+        h('div', { class: 'logos' }, CATALOGO.map(c => h('div', { class: 'celda' }, logoBlanco(c)))));
+    },
+
+    recursos: () => {
+      const rs = resumenRecursos(estado);
+      const n = Math.max(1, ...rs.map(r => r.tiene + r.conoce + r.nuevo));
+      const seg = (cls, v) => (v ? h('span', { class: cls, style: { flexGrow: v } }, v) : null);
+      return [h('div', null, h('h2', null, 'Así está Sage en esta sala'),
+          h('div', { class: 'leyenda' }, h('span', { class: 'tiene' }, 'Lo tienen'), h('span', { class: 'conoce' }, 'Lo conocen, no lo tienen'), h('span', { class: 'nuevo' }, 'Nuevo para ellos'))),
+        h('div', { class: 'radiografia' }, rs.map(r => {
+          const tot = r.tiene + r.conoce + r.nuevo;
+          return h('div', { class: 'fila-rec' },
+            h('div', { class: 'logo' }, logoBlanco(r)),
+            h('div', { class: 'pila', style: { width: `${(tot / n) * 100}%` } }, seg('tiene', r.tiene), seg('conoce', r.conoce), seg('nuevo', r.nuevo)));
+        }))];
+    },
+
+    satisfaccion: () => {
+      const nps = resumenNps(estado);
+      const dims = promediosDims(estado);
+      const porValor = Array.from({ length: 11 }, (_, v) => nps.valores.filter(x => x === v).length);
+      const signo = nps.nps == null ? '-' : nps.nps > 0 ? `+${nps.nps}` : nps.nps < 0 ? `−${-nps.nps}` : '0';
+      return h('div', { class: 'satisf' },
+        h('div', { class: 'col' },
+          h('h2', null, '¿Recomendarían Sage a un colega?'),
+          h('div', { class: 'nps' }, h('b', null, signo), h('span', null, 'Índice de recomendación de la sala (NPS), de −100 a +100')),
+          h('div', { class: 'tira' }, porValor.map((k, v) => h('div', { class: 'col-v ' + (v >= 9 ? 'pro' : v >= 7 ? 'pas' : 'det') },
+            h('div', { class: 'pila-p' }, Array.from({ length: k }, () => h('i'))), h('span', null, v)))),
+          h('div', { class: 'grupos' },
+            h('span', { class: 'det' }, `${nps.detractores} de 0 a 6`), h('span', { class: 'pas' }, `${nps.pasivos} de 7 a 8`), h('span', { class: 'pro' }, `${nps.promotores} de 9 a 10`))),
+        h('div', { class: 'col' }, h('h2', null, 'Cómo califican cada aspecto'), radar(dims)));
+    },
+
+    deseo: () => {
+      const rk = rankingDeseo(estado);
+      const [top, resto] = [rk.slice(0, 3), rk.slice(3)];
+      return [h('div', null, h('h2', null, 'Si el presupuesto no fuera un tema'),
+          h('div', { class: 'sub' }, 'Lo que suscribiría la sala. El primer lugar de cada persona suma 3 puntos, el segundo 2 y el tercero 1.')),
+        top.length ? h('div', { class: 'podio' }, top.map((r, i) => h('div', { class: 'pod' },
+          h('span', { class: 'pos' }, i + 1),
+          h('div', { class: 'logo' }, logoAzul(r)),
+          h('b', null, `${r.puntos} puntos`),
+          h('span', null, `${r.eligieron} ${r.eligieron === 1 ? 'persona lo eligió' : 'personas lo eligieron'}${r.brecha ? `; ${r.brecha} todavía no lo ${r.brecha === 1 ? 'tiene' : 'tienen'}` : ''}`))))
+          : h('div', { class: 'sub' }, 'Las respuestas irán apareciendo aquí.'),
+        resto.length ? h('div', { class: 'resto' }, resto.map(r => h('span', null, `${r.nombre} (${r.puntos})`))) : null];
+    },
+
+    frases: () => {
+      const fs = estado.frases.map(c => fraseDeClave(estado, c)).filter(Boolean);
+      return [h('div', null, h('h2', null, 'Lo que dijo la sala'), h('div', { class: 'sub' }, 'Sin nombres. Algunas respuestas elegidas por el equipo Sage.')),
+        fs.length ? h('div', { class: 'frases', style: { gridTemplateColumns: `repeat(${fs.length <= 2 ? fs.length : fs.length <= 4 ? 2 : 3}, minmax(0,1fr))` } },
+          fs.map(f => h('figure', { class: 'frase' }, h('blockquote', null, f.campo === 'frase' ? `…${f.texto}` : f.texto), h('figcaption', null, f.etiqueta))))
+          : h('div', { class: 'sub' }, 'En un momento compartimos algunas respuestas.')];
+    },
+  };
+
+  // Radar de seis aspectos, promedio de 1 a 5. Sin respuestas, el aspecto queda en el centro.
+  function radar(dims) {
+    const W = 1040, H = 640, cx = W / 2, cy = H / 2 + 10, R = 220;
+    const ang = (i) => (Math.PI * 2 * i) / dims.length - Math.PI / 2;
+    const pt = (i, v) => [cx + Math.cos(ang(i)) * R * (v / 5), cy + Math.sin(ang(i)) * R * (v / 5)];
+    const svg = (tag, attrs, ...hijos) => { const el = document.createElementNS('http://www.w3.org/2000/svg', tag); for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v); el.append(...hijos); return el; };
+    const anillos = [1, 2, 3, 4, 5].map(v => svg('polygon', { points: dims.map((_, i) => pt(i, v).join(',')).join(' '), class: 'anillo' }));
+    const ejes = dims.map((_, i) => svg('line', { x1: cx, y1: cy, x2: pt(i, 5)[0], y2: pt(i, 5)[1], class: 'eje' }));
+    const hay = dims.some(d => d.prom != null);
+    const forma = hay ? svg('polygon', { points: dims.map((d, i) => pt(i, d.prom ?? 0).join(',')).join(' '), class: 'forma' }) : null;
+    const puntos = dims.filter(d => d.prom != null).map(d => { const i = dims.indexOf(d); const [x, y] = pt(i, d.prom); return svg('circle', { cx: x, cy: y, r: 9, class: 'punto' }); });
+    const etiquetas = dims.map((d, i) => {
+      const [x, y] = pt(i, 6.15);
+      const anchor = Math.abs(x - cx) < 10 ? 'middle' : x > cx ? 'start' : 'end';
+      const t = svg('text', { x, y, 'text-anchor': anchor, class: 'etq' });
+      t.append(svg('tspan', { x, dy: '0' }, d.nombre), svg('tspan', { x, dy: '1.25em', class: 'val' }, d.prom == null ? 'Sin datos' : `${coma(d.prom)} - ${NIVELES[Math.round(d.prom) - 1]}`));
+      return t;
+    });
+    return svg('svg', { viewBox: `0 0 ${W} ${H}`, class: 'radar', role: 'img', 'aria-label': dims.map(d => `${d.nombre}: ${coma(d.prom)}`).join('; ') },
+      ...anillos, ...ejes, ...(forma ? [forma] : []), ...puntos, ...etiquetas);
+  }
+
+  // Voto del salón
+  function votoAbierto() {
+    const es = equipos();
+    const votaron = Object.keys(estado.votos ?? {}).length;
+    return [h('div', null, h('h2', null, '¿Qué equipo defendió mejor su carta clave?'),
+        h('div', { class: 'sub' }, `Vota desde tu celular. No puedes votar por tu propio equipo. ${votaron} ${votaron === 1 ? 'voto' : 'votos'} hasta ahora.`)),
+      h('div', { class: 'muro', style: rejilla(es.length) }, es.map(c => {
+        const clave = estado.jugadas.find(j => j.equipo === c && j.clave);
+        return h('div', { class: 'nota votable' },
+          h('span', { class: 'cod' }, `Equipo ${nombreEquipo(c)}`),
+          clave ? h('span', { class: 'mini ' + datosCarta(clave.carta).tipo + ' clave' }, '★ ' + datosCarta(clave.carta).titulo) : null,
+          estado.equipos[c].motivo ? h('span', { class: 'txt' }, estado.equipos[c].motivo) : null);
+      }))];
+  }
+  function votoResultado() {
+    const r = resumenVoto(estado);
+    const max = Math.max(1, ...r.map(x => x.votos));
+    const top = r.filter(x => x.votos === max && x.votos > 0);
+    return [h('div', null, h('h2', null, top.length > 1 ? 'Empate en el voto del salón' : 'El salón eligió'),
+        top.length ? h('div', { class: 'ganador' }, top.map(x => nombreEquipo(x.equipo)).join(' y ')) : h('div', { class: 'sub' }, 'Todavía no hay votos.')),
+      h('div', { class: 'barras' }, r.map(x => h('div', { class: 'barra' + (x.votos === max && x.votos > 0 ? ' top' : '') },
+        h('span', { class: 'n' }, nombreEquipo(x.equipo)),
+        h('span', { class: 'b' }, h('i', { style: { width: (x.votos / max) * 100 + '%' } })),
+        h('b', null, x.votos))))];
+  }
+  function recursos() {
+    const r = conteoRecursos(estado.encuesta).slice(0, 6);
+    if (!r.length) return null;
+    const max = r[0].n;
+    return h('div', { class: 'recursos' }, h('h3', null, 'Lo que quieren conocer mejor'),
+      h('div', { class: 'barras' }, r.map(x => h('div', { class: 'barra' },
+        h('span', { class: 'n' }, x.nombre), h('span', { class: 'b' }, h('i', { style: { width: (x.n / max) * 100 + '%' } })), h('b', null, x.n)))));
+  }
 
   const render = () => {
     const c = fases[estado.fase]();
-    pintar(raiz, h('div', { class: 'proy' }, estado.fase === 'apertura' || estado.fase === 'gracias' ? h('div', { class: 'cinta' }) : null, h('div', { class: 'zona' }, c), pie()));
+    pintar(raiz, h('div', { class: 'proy' }, estado.fase === 'apertura' || (estado.fase === 'gracias' && !Object.values(estado.encuesta).some(r => r.p1)) ? h('div', { class: 'cinta' }) : null, h('div', { class: 'zona' }, c), pie(),
+      reloj(estado.temporizador, 'reloj-proy')));
     ajustar();
   };
   // Reduce la letra del muro hasta que todo quepa en pantalla (muchos grupos o textos largos).

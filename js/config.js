@@ -2,7 +2,7 @@
 // cambia modo a "supabase" y pega la URL y la clave pública (anon) del proyecto.
 export const config = {
   modo: 'supabase', // 'demo' | 'supabase'
-  supabaseUrl: 'https://xwkvaxgoldbwibeietiu.supabase.co/',
+  supabaseUrl: 'https://xwkvaxgoldbwibeietiu.supabase.co',
   supabaseAnonKey: 'sb_publishable_6QaTysz8sFSjckQJIwxITQ_HBNQxElo',
   sesionId: 'lab-2026',
   // Dirección pública de la plataforma. ESTÁ IMPRESA en todos los QR y NFC: no cambiarla después de imprimir.
