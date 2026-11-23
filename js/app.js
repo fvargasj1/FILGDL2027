@@ -45,5 +45,10 @@ async function iniciar() {
 
 iniciar().catch((e) => {
   console.error(e);
-  document.getElementById('app').textContent = 'No pudimos cargar la plataforma. Recarga la página o pide ayuda al equipo de Sage.';
+  const caja = document.getElementById('app');
+  caja.textContent = 'No pudimos cargar la plataforma. Recarga la página o pide ayuda al equipo de Sage.';
+  const detalle = document.createElement('p');
+  detalle.style.cssText = 'font:12px monospace;opacity:.6;margin-top:12px;word-break:break-word';
+  detalle.textContent = 'Detalle técnico: ' + (e?.mensaje || e?.message || String(e));
+  caja.append(detalle);
 });
