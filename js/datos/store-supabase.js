@@ -22,7 +22,7 @@ export async function crearStoreSupabase({ config, asistentes, cliente, ctx = co
   const adoptar = (f) => { if (f && (!fila || f.version > fila.version)) { fila = { estado: f.estado, version: f.version }; notificar(); } };
   async function leer() {
     const { data, error } = await db.from(TABLA).select('estado, version').eq('id', id).maybeSingle();
-    if (error) throw new ErrorJuego('red', 'Sin conexión. Revisa el wifi e intenta de nuevo.');
+    if (error) { console.error('Supabase leer:', error); throw new ErrorJuego('red', 'Sin conexión. Revisa el wifi e intenta de nuevo. [' + (error.code || '') + ' ' + (error.message || '') + ']'); }
     return data;
   }
 
